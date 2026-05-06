@@ -1,9 +1,9 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  async redirects() {
+  async rewrites() {
     if (process.env.NEXT_PUBLIC_READ_ONLY !== "true") return [];
-    return [{ source: "/", destination: "/graph", permanent: false }];
+    return [{ source: "/", destination: "/graph" }];
   },
 };
 
