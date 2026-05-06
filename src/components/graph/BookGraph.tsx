@@ -439,6 +439,10 @@ export default function BookGraph({ data, focusedNodeId, showLabels, onBookClick
     [allConnectedIds]
   );
 
+  const handleZoomToFit = useCallback(() => {
+    fgRef.current?.zoomToFit(600, getFitPadding(), connectedFilter);
+  }, []);
+
   return (
     <div className="relative w-full h-full">
       {/* Intro overlay — fades out to reveal the constellation */}
@@ -489,6 +493,17 @@ export default function BookGraph({ data, focusedNodeId, showLabels, onBookClick
         x={edgeTooltip?.x ?? 0}
         y={edgeTooltip?.y ?? 0}
       />
+
+      {/* Zoom-to-fit button — bottom-right, touch-friendly */}
+      <button
+        onClick={handleZoomToFit}
+        title="Fit all"
+        className="absolute bottom-5 left-4 z-20 w-10 h-10 flex items-center justify-center rounded-xl bg-white/[0.06] border border-white/10 text-white/35 hover:text-white/70 hover:border-white/20 active:bg-white/10 transition-colors touch-manipulation"
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M3 9V3h6M3 3l6 6M21 9V3h-6M21 3l-6 6M3 15v6h6M3 21l6-6M21 15v6h-6M21 21l-6-6" />
+        </svg>
+      </button>
     </div>
   );
 }
