@@ -1,4 +1,5 @@
 import { Book, GoogleBooksCandidate } from "./types";
+import { hasKnownGenre } from "./buildGraph";
 import { nanoid } from "./nanoid";
 
 const BASE_URL = "https://www.googleapis.com/books/v1";
@@ -74,9 +75,11 @@ async function proxySearch(q: string, maxResults = 5): Promise<GoogleBooksCandid
   }
 }
 
-// Pick the best candidate: prefer any result that has subjects over one that doesn't
+// Pick the best candidate: prefer recognized genre > any subjects > first result
 function bestOf(candidates: GoogleBooksCandidate[]): GoogleBooksCandidate | null {
   if (candidates.length === 0) return null;
+  const withGenre = candidates.find((c) => hasKnownGenre(c.subjects));
+  if (withGenre) return withGenre;
   return candidates.find((c) => c.subjects.length > 0) ?? candidates[0];
 }
 

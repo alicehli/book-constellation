@@ -202,6 +202,9 @@ export function clearClaudeEdgeCache(): void {
 
 // ─── Claude edge fetching ─────────────────────────────────────────────────────
 
+// Deduplicates concurrent requests for the same library hash
+const _inFlight = new Map<string, Promise<ClaudeRawEdge[]>>();
+
 async function fetchClaudeEdges(themes: BookThemes[]): Promise<ClaudeRawEdge[]> {
   const hash = libraryHash(themes.map((t) => t.title));
   const cached = readEdgeCache(hash);
@@ -210,24 +213,36 @@ async function fetchClaudeEdges(themes: BookThemes[]): Promise<ClaudeRawEdge[]> 
     return cached;
   }
 
+  if (_inFlight.has(hash)) {
+    console.log("Claude edges: joining in-flight request");
+    return _inFlight.get(hash)!;
+  }
+
   const books = themes.map((t) => ({ title: t.title, author: t.author }));
   console.log(`Claude edges: sending ${books.length} books`);
 
-  try {
-    const res = await fetch("/api/analyze-library", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ books }),
-    });
-    const data = await res.json() as { edges?: ClaudeRawEdge[] };
-    const allEdges = data.edges ?? [];
-    if (allEdges.length > 0) writeEdgeCache(hash, allEdges);
-    console.log(`Claude edges: ${allEdges.length} from API`);
-    return allEdges;
-  } catch (err) {
-    console.warn("Claude edges fetch failed:", err);
-    return [];
-  }
+  const request = (async () => {
+    try {
+      const res = await fetch("/api/analyze-library", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ books }),
+      });
+      const data = await res.json() as { edges?: ClaudeRawEdge[] };
+      const allEdges = data.edges ?? [];
+      if (allEdges.length > 0) writeEdgeCache(hash, allEdges);
+      console.log(`Claude edges: ${allEdges.length} from API`);
+      return allEdges;
+    } catch (err) {
+      console.warn("Claude edges fetch failed:", err);
+      return [];
+    } finally {
+      _inFlight.delete(hash);
+    }
+  })();
+
+  _inFlight.set(hash, request);
+  return request;
 }
 
 async function buildClaudeEdges(themes: BookThemes[]): Promise<AnalyzerEdge[]> {

@@ -421,6 +421,24 @@ export default function BookGraph({ data, focusedNodeId, showLabels, onBookClick
     }
   }, [minZoomLevel]);
 
+  // Give every node a minimum hit area so unconnected (to-read) nodes are clickable.
+  // react-force-graph derives the default hit radius from nodeVal — val=0 → radius=0.
+  const nodePointerAreaPaint = useCallback(
+    (node: object, color: string, ctx: CanvasRenderingContext2D) => {
+      const n = node as GraphNode;
+      const x = n.x ?? 0;
+      const y = n.y ?? 0;
+      const r = allConnectedIds.has(n.id)
+        ? nodeRadius(n.val, n.book.rating)
+        : Math.max(starProps(n.id).r, 8);
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, 2 * Math.PI);
+      ctx.fillStyle = color;
+      ctx.fill();
+    },
+    [allConnectedIds]
+  );
+
   return (
     <div className="relative w-full h-full">
       {/* Intro overlay — fades out to reveal the constellation */}
@@ -441,6 +459,7 @@ export default function BookGraph({ data, focusedNodeId, showLabels, onBookClick
         nodeColor="color"
         nodeCanvasObject={nodeCanvasObject}
         nodeCanvasObjectMode={() => "replace"}
+        nodePointerAreaPaint={nodePointerAreaPaint}
         linkColor={linkColor}
         linkWidth={(link) => Math.sqrt((link as GraphLink).weight) * 1.2 + 1.0}
         linkCurvature={(link) => {

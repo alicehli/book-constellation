@@ -68,6 +68,11 @@ function pickNodeColor(subjects: string[]): string {
   return DEFAULT_NODE_COLOR;
 }
 
+/** Returns true if at least one subject maps to a known genre color. */
+export function hasKnownGenre(subjects: string[]): boolean {
+  return pickNodeColor(subjects) !== DEFAULT_NODE_COLOR;
+}
+
 // ─── Node sizing ─────────────────────────────────────────────────────────────
 
 /**

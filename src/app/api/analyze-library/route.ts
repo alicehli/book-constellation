@@ -36,6 +36,7 @@ ${books.map((b) => `${b.title} by ${b.author}`).join("\n")}`;
       },
       body: JSON.stringify({
         model: "claude-sonnet-4-6",
+        // model: "claude-haiku-4-5-20251001", // cheaper for public deployment; shallower connections
         max_tokens: 32768,
         messages: [{ role: "user", content: prompt }],
       }),

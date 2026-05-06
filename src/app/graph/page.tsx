@@ -13,13 +13,13 @@ import { getAnalysisMode } from "@/lib/analyzer";
 
 export default function GraphPage() {
   const router = useRouter();
-  const { books, clearLibrary, progress, hydrated } = useBooks();
+  const { books, precomputedEdges, clearLibrary, progress, hydrated, readOnly } = useBooks();
 
   const [selectedBook, setSelectedBook] = useState<Book | null>(null);
   const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
   const [showLabels, setShowLabels] = useState(true);
 
-  const { graphData, analyzing } = useGraph(books);
+  const { graphData, analyzing, edges } = useGraph(books, precomputedEdges);
 
   const isClaudeMode = getAnalysisMode() === "claude";
 
@@ -75,12 +75,14 @@ export default function GraphPage() {
       <div className="min-h-screen bg-[#070714] flex items-center justify-center">
         <div className="text-center space-y-4">
           <p className="text-white/40 text-sm">No books in your library yet.</p>
-          <button
-            onClick={() => router.push("/")}
-            className="text-violet-400 hover:text-violet-300 text-sm underline underline-offset-2"
-          >
-            Import some books
-          </button>
+          {!readOnly && (
+            <button
+              onClick={() => router.push("/")}
+              className="text-violet-400 hover:text-violet-300 text-sm underline underline-offset-2"
+            >
+              Import some books
+            </button>
+          )}
         </div>
       </div>
     );
@@ -132,29 +134,55 @@ export default function GraphPage() {
 
       {/* Top-left HUD */}
       <div className="absolute top-4 left-4 z-20 flex items-center gap-3 flex-wrap">
-        <button
-          onClick={() => router.push("/")}
-          className="flex items-center gap-1.5 text-white/30 hover:text-white/70 transition-colors text-sm"
-        >
-          <span>🌌</span> Book Constellation
-        </button>
-        <button
-          onClick={() => router.push("/")}
-          className="px-3 py-1.5 rounded-lg bg-white/[0.04] border border-white/8 text-xs text-white/40 hover:text-white/70 hover:border-white/20 transition-colors"
-        >
-          + Add books
-        </button>
-        <button
-          onClick={() => {
-            if (confirm("Clear your entire library? This cannot be undone.")) {
-              clearLibrary();
-              router.push("/");
-            }
-          }}
-          className="px-3 py-1.5 rounded-lg bg-white/[0.04] border border-white/8 text-xs text-white/30 hover:text-red-400 hover:border-red-400/20 transition-colors"
-        >
-          Clear
-        </button>
+        {readOnly ? (
+          <span className="flex items-center gap-1.5 text-white/30 text-sm">
+            <span>🌌</span> Book Constellation
+          </span>
+        ) : (
+          <button
+            onClick={() => router.push("/")}
+            className="flex items-center gap-1.5 text-white/30 hover:text-white/70 transition-colors text-sm"
+          >
+            <span>🌌</span> Book Constellation
+          </button>
+        )}
+        {!readOnly && (
+          <>
+            <button
+              onClick={() => router.push("/")}
+              className="px-3 py-1.5 rounded-lg bg-white/[0.04] border border-white/8 text-xs text-white/40 hover:text-white/70 hover:border-white/20 transition-colors"
+            >
+              + Add books
+            </button>
+            <button
+              onClick={() => {
+                if (confirm("Clear your entire library? This cannot be undone.")) {
+                  clearLibrary();
+                  router.push("/");
+                }
+              }}
+              className="px-3 py-1.5 rounded-lg bg-white/[0.04] border border-white/8 text-xs text-white/30 hover:text-red-400 hover:border-red-400/20 transition-colors"
+            >
+              Clear
+            </button>
+            <button
+              disabled={analyzing || edges.length === 0}
+              onClick={() => {
+                const payload = { books, edges };
+                const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = "alice-library.json";
+                a.click();
+                URL.revokeObjectURL(url);
+              }}
+              className="px-3 py-1.5 rounded-lg bg-white/[0.04] border border-white/8 text-xs transition-colors disabled:opacity-30 disabled:cursor-not-allowed text-white/30 hover:text-white/60 hover:border-white/20"
+            >
+              Export JSON
+            </button>
+          </>
+        )}
         <SearchBar books={books} onSelect={handleBookClick} />
         <button
           onClick={() => setShowLabels((v) => !v)}
@@ -182,7 +210,7 @@ export default function GraphPage() {
       <GraphLegend />
 
       {/* Enrichment progress */}
-      {isEnriching && progress && (
+      {!readOnly && isEnriching && progress && (
         <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-20 w-72">
           <div className="rounded-xl bg-[#0d0d22]/90 backdrop-blur border border-white/8 px-4 py-3 shadow-xl">
             <div className="flex justify-between text-xs text-white/40 mb-2">
