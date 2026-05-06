@@ -19,6 +19,7 @@ interface Props {
 }
 
 const DIM_OPACITY = 0.08;
+const IS_TOUCH = typeof window !== "undefined" && ("ontouchstart" in window || navigator.maxTouchPoints > 0);
 
 // Padding so the constellation fills ~65% of the smaller viewport dimension
 function getFitPadding(): number {
@@ -187,11 +188,11 @@ export default function BookGraph({ data, focusedNodeId, showLabels, onBookClick
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data.nodes.length]);
 
-  // Pan + zoom to focused node; zoom back out when deselected
+  // Pan + zoom to focused node; zoom back out when deselected (desktop only)
   useEffect(() => {
     if (!fgRef.current) return;
     if (!focusedNodeId) {
-      if (wasFocusedRef.current) fgRef.current.zoomToFit(600, getFitPadding(), connectedFilter);
+      if (wasFocusedRef.current && !IS_TOUCH) fgRef.current.zoomToFit(600, getFitPadding(), connectedFilter);
       wasFocusedRef.current = false;
       return;
     }
