@@ -17,7 +17,7 @@ export default function GraphPage() {
 
   const [selectedBook, setSelectedBook] = useState<Book | null>(null);
   const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
-  const [showLabels, setShowLabels] = useState(true);
+  const [showLabels, setShowLabels] = useState(false);
 
   const { graphData, analyzing, edges } = useGraph(books, precomputedEdges);
 
