@@ -36,19 +36,20 @@ export default function SearchBar({ books, onSelect }: Props) {
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
-  // Close on Escape
-  useEffect(() => {
-    function handler(e: KeyboardEvent) {
-      if (e.key === "Escape") { setOpen(false); setQuery(""); }
-    }
-    document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
-  }, []);
-
   const handleSelect = (book: Book) => {
     onSelect(book);
     setQuery("");
     setOpen(false);
+    inputRef.current?.blur();
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter" && results[0]) handleSelect(results[0]);
+    if (e.key === "Escape") {
+      setQuery("");
+      setOpen(false);
+      inputRef.current?.blur();
+    }
   };
 
   return (
@@ -65,12 +66,15 @@ export default function SearchBar({ books, onSelect }: Props) {
           value={query}
           onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
           onFocus={() => setOpen(true)}
+          onKeyDown={handleKeyDown}
+          aria-label="Search books"
           placeholder="Search books…"
           className="bg-transparent text-xs text-white/80 placeholder:text-white/25 outline-none w-32 focus:w-44 transition-all duration-200"
         />
         {query && (
           <button
             onClick={() => { setQuery(""); inputRef.current?.focus(); }}
+            aria-label="Clear search"
             className="text-white/25 hover:text-white/60 transition-colors leading-none"
           >
             ✕
@@ -90,7 +94,7 @@ export default function SearchBar({ books, onSelect }: Props) {
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
                   src={book.coverUrl}
-                  alt={book.title}
+                  alt=""
                   className="w-7 h-10 object-cover rounded flex-shrink-0"
                 />
               ) : (

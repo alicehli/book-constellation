@@ -69,7 +69,7 @@ ${books.map((b) => `${b.title} by ${b.author}`).join("\n")}`;
     const rawEdges = raw["edges"];
     if (Array.isArray(rawEdges)) {
       for (const e of rawEdges) {
-        if (typeof e.a === "string" && typeof e.b === "string" && Array.isArray(e.themes)) {
+        if (e && typeof e.a === "string" && typeof e.b === "string" && Array.isArray(e.themes)) {
           edges.push({
             a: e.a,
             b: e.b,
@@ -86,12 +86,24 @@ ${books.map((b) => `${b.title} by ${b.author}`).join("\n")}`;
   return [];
 }
 
+const MAX_BOOKS = 1000;
+
 export async function POST(req: NextRequest) {
+  // The public read-only deployment ships precomputed edges; don't expose a paid endpoint
+  if (process.env.NEXT_PUBLIC_READ_ONLY === "true") return new NextResponse(null, { status: 404 });
+
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return NextResponse.json({ edges: [] });
 
-  const { books } = (await req.json()) as { books: BookInput[] };
-  if (!books?.length) return NextResponse.json({ edges: [] });
+  const body = await req.json().catch(() => null);
+  const books: BookInput[] = (Array.isArray(body?.books) ? body.books : [])
+    .filter((b: unknown): b is BookInput =>
+      !!b && typeof (b as BookInput).title === "string" && typeof (b as BookInput).author === "string")
+    .map((b: BookInput) => ({ title: b.title.slice(0, 200), author: b.author.slice(0, 100) }));
+  if (books.length === 0) return NextResponse.json({ edges: [] });
+  if (books.length > MAX_BOOKS) {
+    return NextResponse.json({ error: `At most ${MAX_BOOKS} books` }, { status: 413 });
+  }
 
   try {
     const edges = await callClaude(books, apiKey);

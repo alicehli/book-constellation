@@ -1,4 +1,5 @@
 import { Book } from "./types";
+import { bookKey } from "./normalize";
 
 const STORAGE_KEY = "bookgraph_library";
 
@@ -20,25 +21,13 @@ export function loadBooks(): Book[] {
   }
 }
 
-function normTitle(title: string): string {
-  return title
-    .toLowerCase()
-    .replace(/[:(].*/g, "")
-    .replace(/[^a-z0-9\s]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function normAuthor(author: string): string {
-  return author.toLowerCase().replace(/[^a-z\s]/g, "").replace(/\s+/g, " ").trim();
-}
-
-export function mergeBooks(existing: Book[], incoming: Book[]): Book[] {
-  const seen = new Set(
-    existing.map((b) => `${normTitle(b.title)}||${normAuthor(b.author)}`)
-  );
-  const novel = incoming.filter(
-    (b) => !seen.has(`${normTitle(b.title)}||${normAuthor(b.author)}`)
-  );
-  return [...existing, ...novel];
+/** Books from `incoming` not already in `existing` (or earlier in `incoming`), by title + author */
+export function novelBooks(existing: Book[], incoming: Book[]): Book[] {
+  const seen = new Set(existing.map(bookKey));
+  return incoming.filter((b) => {
+    const key = bookKey(b);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }

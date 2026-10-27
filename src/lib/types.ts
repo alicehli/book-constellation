@@ -16,10 +16,6 @@ export interface Book {
   enriched: boolean;
 }
 
-export interface GraphFilters {
-  minRating: number; // 0 = any
-}
-
 export interface RawGoodreadsRow {
   Title: string;
   Author: string;
@@ -38,6 +34,7 @@ export interface GoogleBooksCandidate {
   description?: string;
   subjects: string[];
   publishedYear?: number;
+  pageCount?: number;
 }
 
 // Graph types (shaped for react-force-graph-2d)
@@ -47,7 +44,6 @@ export interface GraphNode {
   author: string;
   val: number; // node size = connection count (min 1)
   color: string;
-  labelVisible: boolean;
   book: Book;
   // force-graph internals (populated at runtime)
   x?: number;
@@ -59,7 +55,8 @@ export interface GraphNode {
 export interface GraphLink {
   source: string;
   target: string;
-  weight: number; // number of shared subjects
+  weight: number; // raw analyzer score
+  strength?: number; // 0–1 normalized score; undefined for Claude edges (flat score)
   sharedSubjects: string[];
   isManual: boolean; // V2: user-created links
 }
@@ -68,8 +65,6 @@ export interface GraphData {
   nodes: GraphNode[];
   links: GraphLink[];
 }
-
-export type ImportMethod = "csv" | "text";
 
 export interface EnrichmentProgress {
   total: number;

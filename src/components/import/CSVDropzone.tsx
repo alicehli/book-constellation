@@ -15,7 +15,7 @@ export default function CSVDropzone({ onBooks }: Props) {
   const processFile = useCallback(
     (file: File) => {
       setError(null);
-      if (!file.name.endsWith(".csv")) {
+      if (!file.name.toLowerCase().endsWith(".csv")) {
         setError("Please upload a .csv file exported from Goodreads.");
         return;
       }

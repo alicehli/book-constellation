@@ -11,6 +11,8 @@ import { GoogleBooksCandidate, Book } from "@/lib/types";
 
 type Step = "input" | "confirming";
 
+const SEARCH_CONCURRENCY = 4;
+
 export default function ImportSection() {
   const { books, addBooks, progress } = useBooks();
   const router = useRouter();
@@ -26,16 +28,20 @@ export default function ImportSection() {
 
   const handleTextTitles = async (titles: string[]) => {
     setSearching(true);
-    const groups: MatchGroup[] = await Promise.all(
-      titles.map(async (query) => {
-        try {
-          const candidates = await findCandidates(query);
-          return { query, candidates, selected: candidates[0] ?? null };
-        } catch {
-          return { query, candidates: [], selected: null };
-        }
-      })
-    );
+    // A few lookups at a time — firing them all at once trips Google Books rate limits
+    const groups: MatchGroup[] = [];
+    for (let i = 0; i < titles.length; i += SEARCH_CONCURRENCY) {
+      groups.push(...await Promise.all(
+        titles.slice(i, i + SEARCH_CONCURRENCY).map(async (query) => {
+          try {
+            const candidates = await findCandidates(query);
+            return { query, candidates, selected: candidates[0] ?? null };
+          } catch {
+            return { query, candidates: [], selected: null };
+          }
+        })
+      ));
+    }
     setMatchGroups(groups);
     setSearching(false);
     setStep("confirming");
@@ -80,7 +86,7 @@ export default function ImportSection() {
           {isEnriching && progress && (
             <div className="mt-6 space-y-2">
               <div className="flex justify-between text-xs text-white/40">
-                <span>Enriching "{progress.currentTitle}"</span>
+                <span className="truncate">Enriching “{progress.currentTitle}”</span>
                 <span>{progress.current} / {progress.total}</span>
               </div>
               <div className="h-1 w-full rounded-full bg-white/10">

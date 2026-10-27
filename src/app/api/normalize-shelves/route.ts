@@ -1,14 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
 import { extractJson } from "@/lib/extractJson";
 
+const MAX_SHELVES = 200;
+
 export async function POST(req: NextRequest) {
+  // The public read-only deployment never analyzes; don't expose a paid endpoint
+  if (process.env.NEXT_PUBLIC_READ_ONLY === "true") return new NextResponse(null, { status: 404 });
+
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     return NextResponse.json({ mapping: {} });
   }
 
-  const { shelves } = (await req.json()) as { shelves: string[] };
-  if (!shelves?.length) {
+  const body = await req.json().catch(() => null);
+  const shelves: string[] = (Array.isArray(body?.shelves) ? body.shelves : [])
+    .filter((s: unknown): s is string => typeof s === "string" && s.length <= 80)
+    .slice(0, MAX_SHELVES);
+  if (shelves.length === 0) {
     return NextResponse.json({ mapping: {} });
   }
 
@@ -57,7 +65,7 @@ Shelves to map: ${JSON.stringify(shelves)}`;
         },
         body: JSON.stringify({
           model: "claude-sonnet-4-6",
-          max_tokens: 1024,
+          max_tokens: 8192, // ~15 tokens per shelf; 1024 truncated the JSON past ~60 shelves
           messages: [{ role: "user", content: prompt }],
         }),
       });

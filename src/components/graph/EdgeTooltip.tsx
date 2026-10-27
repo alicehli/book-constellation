@@ -1,6 +1,7 @@
 "use client";
 
 import { GraphLink } from "@/lib/types";
+import { formatTheme } from "@/lib/format";
 
 interface Props {
   link: GraphLink | null;
@@ -14,7 +15,11 @@ export default function EdgeTooltip({ link, x, y }: Props) {
   return (
     <div
       className="fixed z-40 pointer-events-none"
-      style={{ left: x + 12, top: y - 8 }}
+      // Clamp so the tooltip (max-w-56 = 224px) never runs off the right/bottom edge
+      style={{
+        left: Math.min(x + 12, window.innerWidth - 236),
+        top: Math.min(y - 8, window.innerHeight - 120),
+      }}
     >
       <div className="bg-[#12122a]/95 backdrop-blur border border-white/10 rounded-xl px-3 py-2 shadow-xl max-w-56">
         <p className="text-xs text-white/35 mb-1.5 uppercase tracking-wider">Shared themes</p>
@@ -24,7 +29,7 @@ export default function EdgeTooltip({ link, x, y }: Props) {
               key={s}
               className="px-1.5 py-0.5 rounded-full bg-violet-900/40 border border-violet-500/20 text-xs text-violet-200/70"
             >
-              {s}
+              {formatTheme(s)}
             </span>
           ))}
         </div>

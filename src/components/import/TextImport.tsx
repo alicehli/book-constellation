@@ -22,7 +22,7 @@ export default function TextImport({ onTitles, loading }: Props) {
       <textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
-        placeholder={"The Power Broker, Gilead, Crying in H Mart\n\nor one per line"}
+        placeholder={"One title per line, e.g.\nThe Power Broker\nGilead\nCrying in H Mart"}
         rows={5}
         className="w-full rounded-xl bg-white/[0.04] border border-white/10 px-4 py-3 text-sm text-white/80 placeholder:text-white/25 resize-none focus:outline-none focus:border-violet-500 transition-colors"
       />

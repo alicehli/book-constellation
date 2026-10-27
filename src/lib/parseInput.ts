@@ -36,9 +36,10 @@ export function parseGoodreadsCSV(csvText: string): Book[] {
     });
 }
 
+// One title per line — commas are common inside titles ("Guns, Germs, and Steel")
 export function parsePlainText(raw: string): string[] {
   return raw
-    .split(/[\n,]+/)
+    .split(/\n+/)
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
 }

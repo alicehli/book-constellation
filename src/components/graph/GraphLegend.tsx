@@ -20,6 +20,10 @@ const GENRES = [
   { label: "Poetry",                 color: "#ce93d8" },
   { label: "Young Adult",            color: "#26a69a" },
   { label: "Computers / Technology", color: "#00bcd4" },
+  { label: "Psychology",             color: "#a3e635" },
+  { label: "Art",                    color: "#fb7185" },
+  { label: "Travel",                 color: "#2dd4bf" },
+  { label: "Other / unknown",        color: "#9e9e9e" },
 ];
 
 function MiniStar({ color }: { color: string }) {

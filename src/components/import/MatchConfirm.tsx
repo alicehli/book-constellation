@@ -37,7 +37,7 @@ export default function MatchConfirm({ groups: initial, onConfirm, onCancel }: P
       <div className="space-y-5 max-h-[480px] overflow-y-auto pr-1 custom-scroll">
         {groups.map((group, gi) => (
           <div key={gi}>
-            <p className="text-xs text-white/35 mb-2">Query: "{group.query}"</p>
+            <p className="text-xs text-white/35 mb-2">Query: “{group.query}”</p>
             <div className="space-y-2">
               {group.candidates.length === 0 ? (
                 <p className="text-xs text-white/30 italic">No results found.</p>

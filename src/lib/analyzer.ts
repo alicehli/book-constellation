@@ -1,23 +1,18 @@
 /**
  * Connection engine — TF-IDF scoring (local mode) or Claude-derived edge pairs
- * (claude mode). Switch with setAnalysisMode().
+ * (claude mode). Mode is chosen by NEXT_PUBLIC_ANALYSIS_MODE.
  */
 
 import { stemmer as porterStem } from "stemmer";
 import type { Book } from "./types";
+import { bookKey, isRead, normTitle } from "./normalize";
+import { htmlToText } from "./richText";
 
-const MODE_STORAGE_KEY = "bookgraph-analysis-mode";
+type AnalysisMode = "local" | "claude";
 
-let ANALYSIS_MODE: "local" | "claude" = (() => {
-  try { return (localStorage.getItem(MODE_STORAGE_KEY) as "local" | "claude") || "local"; }
-  catch { return "local"; }
-})();
-
-export function setAnalysisMode(mode: "local" | "claude"): void {
-  ANALYSIS_MODE = mode;
-  try { localStorage.setItem(MODE_STORAGE_KEY, mode); } catch {}
-}
-export function getAnalysisMode(): "local" | "claude" { return ANALYSIS_MODE; }
+// Set NEXT_PUBLIC_ANALYSIS_MODE=claude to derive edges from Claude instead of TF-IDF
+const ANALYSIS_MODE: AnalysisMode =
+  process.env.NEXT_PUBLIC_ANALYSIS_MODE === "claude" ? "claude" : "local";
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -49,6 +44,9 @@ export interface AnalyzerEdge {
 
 const MIN_SCORE_THRESHOLD = 0.12;
 const DESC_FLOOR = 0.05;
+// Floor for IDF weights: log(N/(1+df)) is ≤ 0 for tokens in ≥ N-1 books, so without a
+// floor a 2–3 book library could never connect. Only affects near-universal tokens.
+const MIN_IDF = 0.1;
 
 const EDGE_CAP_HIGH = 5;
 const EDGE_CAP_MID  = 2;
@@ -61,9 +59,7 @@ const WEIGHTS_LOCAL = {
   rating:     0.15,
 };
 
-export const MAX_SCORE_LOCAL  = 2.35; // 1.0 + 0.7 + 0.5 + 0.15
-export const MAX_SCORE_CLAUDE = 1.0;  // flat score per Claude edge
-export const MAX_SCORE = MAX_SCORE_LOCAL;
+export const MAX_SCORE_LOCAL = 2.35; // 1.0 + 0.7 + 0.5 + 0.15
 
 // Stop words for description tokenisation
 const DESC_STOP_WORDS = new Set([
@@ -184,19 +180,22 @@ function readEdgeCache(hash: string): ClaudeRawEdge[] | null {
   } catch { return null; }
 }
 
+// Only the current library's edges are worth keeping; stale entries would otherwise
+// accumulate with every library change until they crowd out the library itself.
 function writeEdgeCache(hash: string, edges: ClaudeRawEdge[]): void {
+  clearClaudeEdgeCache();
   try { localStorage.setItem(CLAUDE_EDGES_KEY + hash, JSON.stringify(edges)); }
   catch { /* localStorage full or unavailable */ }
 }
 
 export function clearClaudeEdgeCache(): void {
   try {
-    const toRemove: string[] = [];
+    const stale: string[] = [];
     for (let i = 0; i < localStorage.length; i++) {
       const k = localStorage.key(i);
-      if (k?.startsWith(CLAUDE_EDGES_KEY)) toRemove.push(k);
+      if (k?.startsWith(CLAUDE_EDGES_KEY)) stale.push(k);
     }
-    for (const k of toRemove) localStorage.removeItem(k);
+    for (const k of stale) localStorage.removeItem(k);
   } catch { /* unavailable */ }
 }
 
@@ -208,18 +207,12 @@ const _inFlight = new Map<string, Promise<ClaudeRawEdge[]>>();
 async function fetchClaudeEdges(themes: BookThemes[]): Promise<ClaudeRawEdge[]> {
   const hash = libraryHash(themes.map((t) => t.title));
   const cached = readEdgeCache(hash);
-  if (cached !== null) {
-    console.log(`Claude edges: ${cached.length} from cache`);
-    return cached;
-  }
+  if (cached !== null) return cached;
 
-  if (_inFlight.has(hash)) {
-    console.log("Claude edges: joining in-flight request");
-    return _inFlight.get(hash)!;
-  }
+  const inFlight = _inFlight.get(hash);
+  if (inFlight) return inFlight;
 
   const books = themes.map((t) => ({ title: t.title, author: t.author }));
-  console.log(`Claude edges: sending ${books.length} books`);
 
   const request = (async () => {
     try {
@@ -231,7 +224,6 @@ async function fetchClaudeEdges(themes: BookThemes[]): Promise<ClaudeRawEdge[]> 
       const data = await res.json() as { edges?: ClaudeRawEdge[] };
       const allEdges = data.edges ?? [];
       if (allEdges.length > 0) writeEdgeCache(hash, allEdges);
-      console.log(`Claude edges: ${allEdges.length} from API`);
       return allEdges;
     } catch (err) {
       console.warn("Claude edges fetch failed:", err);
@@ -299,18 +291,14 @@ async function buildClaudeEdges(themes: BookThemes[]): Promise<AnalyzerEdge[]> {
   const seenPairs = new Set<string>();
   const MAX_PER_BOOK = 5;
   const edges: AnalyzerEdge[] = [];
-  let nMatched = 0, nFailed = 0;
-  const failedSamples: string[] = [];
+  const unmatched: string[] = [];
 
   for (const raw of rawEdges) {
     const srcId = resolveId(raw.a);
     const tgtId = resolveId(raw.b);
 
     if (!srcId || !tgtId) {
-      nFailed++;
-      if (failedSamples.length < 5) {
-        failedSamples.push(!srcId ? `a: "${raw.a}"` : `b: "${raw.b}"`);
-      }
+      unmatched.push(!srcId ? raw.a : raw.b);
       continue;
     }
     if (srcId === tgtId) continue;
@@ -325,7 +313,6 @@ async function buildClaudeEdges(themes: BookThemes[]): Promise<AnalyzerEdge[]> {
 
     edgeCount.set(srcId, srcCount + 1);
     edgeCount.set(tgtId, tgtCount + 1);
-    nMatched++;
 
     edges.push({
       source: srcId,
@@ -336,8 +323,9 @@ async function buildClaudeEdges(themes: BookThemes[]): Promise<AnalyzerEdge[]> {
     });
   }
 
-  console.log(`Claude edges: ${nMatched} matched, ${nFailed} failed out of ${rawEdges.length} raw`);
-  if (failedSamples.length > 0) console.log("Failed samples:", failedSamples);
+  if (unmatched.length > 0) {
+    console.warn(`Claude edges: ${unmatched.length}/${rawEdges.length} referenced unknown titles, e.g.`, unmatched.slice(0, 5));
+  }
 
   return edges;
 }
@@ -355,7 +343,7 @@ const DESC_PROMO_PATTERNS = [
   "award-winning", "award winning", "prize-winning",
   "critically acclaimed", "critical acclaim",
   "tour de force", "must-read", "must read", "page-turner", "page turner",
-  "tour de force", "magnum opus", "chef-d'oeuvre",
+  "magnum opus", "chef-d'oeuvre",
   "kirkus", "publishers weekly", "library journal", "booklist",
   "bookpage", "school library journal",
   "new york times", "washington post", "the guardian", "the atlantic",
@@ -407,15 +395,22 @@ function tokeniseCategories(subjects: string[]): string[] {
 
 // ─── Math primitives ─────────────────────────────────────────────────────────
 
-function cosineSimilarity(a: number[], b: number[]): number {
-  let dot = 0, magA = 0, magB = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot  += a[i] * b[i];
-    magA += a[i] * a[i];
-    magB += b[i] * b[i];
+/** Sparse vector: token indices ascending, with matching weights and precomputed norm */
+interface SparseVec {
+  idx: Int32Array;
+  val: Float64Array;
+  norm: number;
+}
+
+function cosineSimilarity(a: SparseVec, b: SparseVec): number {
+  if (a.norm === 0 || b.norm === 0) return 0;
+  let dot = 0;
+  for (let i = 0, j = 0; i < a.idx.length && j < b.idx.length; ) {
+    if (a.idx[i] === b.idx[j]) dot += a.val[i++] * b.val[j++];
+    else if (a.idx[i] < b.idx[j]) i++;
+    else j++;
   }
-  if (magA === 0 || magB === 0) return 0;
-  return dot / (Math.sqrt(magA) * Math.sqrt(magB));
+  return dot / (a.norm * b.norm);
 }
 
 // ─── TF-IDF ──────────────────────────────────────────────────────────────────
@@ -424,8 +419,8 @@ function buildTfIdfVectors(
   themes: BookThemes[],
   getTokens: (t: BookThemes) => string[],
   dampenGeo = false,
-  minIdf = 0,
-): number[][] {
+  minIdf: number,
+): SparseVec[] {
   const N = themes.length;
   const tokenLists = themes.map(getTokens);
 
@@ -435,55 +430,37 @@ function buildTfIdfVectors(
       if (!vocab.has(token)) vocab.set(token, vocab.size);
     }
   }
-  const V = vocab.size;
-  if (V === 0) return themes.map(() => []);
 
-  const df = new Float64Array(V);
-  for (const tokens of tokenLists) {
-    const seen = new Set<number>();
-    for (const token of tokens) {
-      const idx = vocab.get(token)!;
-      if (!seen.has(idx)) { df[idx]++; seen.add(idx); }
-    }
-  }
+  const df = new Float64Array(vocab.size);
+  const indexLists = tokenLists.map((tokens) => {
+    const unique = [...new Set(tokens.map((t) => vocab.get(t)!))].sort((x, y) => x - y);
+    for (const i of unique) df[i]++;
+    return unique;
+  });
 
   const idf = Array.from(df, (d) => Math.max(Math.log(N / (1 + d)), minIdf));
 
   if (dampenGeo) {
-    for (const [token, idx] of vocab) {
-      if (GEO_TEMPORAL_TOKENS.has(token)) idf[idx] *= GEO_TEMPORAL_DAMPEN_MULTIPLIER;
+    for (const [token, i] of vocab) {
+      if (GEO_TEMPORAL_TOKENS.has(token)) idf[i] *= GEO_TEMPORAL_DAMPEN_MULTIPLIER;
     }
   }
 
-  return tokenLists.map((tokens) => {
-    const vec = new Array<number>(V).fill(0);
-    for (const token of tokens) {
-      const idx = vocab.get(token)!;
-      vec[idx] = idf[idx];
-    }
-    return vec;
+  return indexLists.map((unique) => {
+    const val = Float64Array.from(unique, (i) => idf[i]);
+    let sq = 0;
+    for (const v of val) sq += v * v;
+    return { idx: Int32Array.from(unique), val, norm: Math.sqrt(sq) };
   });
 }
 
 // ─── Deduplication ───────────────────────────────────────────────────────────
 
-function normTitle(title: string): string {
-  return title
-    .toLowerCase()
-    .replace(/[:(].*/g, "")
-    .replace(/[^a-z0-9\s]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function normAuthor(author: string): string {
-  return author.toLowerCase().replace(/[^a-z\s]/g, "").replace(/\s+/g, " ").trim();
-}
-
-function deduplicateBooks(books: Book[]): Book[] {
+/** Collapse duplicate imports of the same book, keeping the most complete copy */
+export function deduplicateBooks(books: Book[]): Book[] {
   const groups = new Map<string, Book[]>();
   for (const book of books) {
-    const key = `${normTitle(book.title)}||${normAuthor(book.author)}`;
+    const key = bookKey(book);
     const group = groups.get(key) ?? [];
     group.push(book);
     groups.set(key, group);
@@ -496,7 +473,6 @@ function deduplicateBooks(books: Book[]): Book[] {
       continue;
     }
     const best = group.reduce((a, b) => {
-      const isRead = (x: Book) => x.exclusiveShelf === "read" || (!x.exclusiveShelf && !!x.dateRead);
       const score = (x: Book) =>
         (isRead(x) ? 10 : 0) +
         (x.review ? 4 : 0) +
@@ -516,7 +492,7 @@ export async function analyzeBooks(rawBooks: Book[]): Promise<BookThemes[]> {
   const deduped = deduplicateBooks(rawBooks);
   // Claude mode only analyzes read books — keeps the payload small and focused
   const books = ANALYSIS_MODE === "claude"
-    ? deduped.filter((b) => b.exclusiveShelf === "read" || (!b.exclusiveShelf && !!b.dateRead))
+    ? deduped.filter(isRead)
     : deduped;
 
   let shelfMapping = new Map<string, string[]>();
@@ -549,7 +525,7 @@ export async function analyzeBooks(rawBooks: Book[]): Promise<BookThemes[]> {
       title:  book.title,
       author: book.author,
       categoryTokens:    tokeniseCategories(book.subjects),
-      descriptionTokens: tokeniseDescription(book.description ?? ""),
+      descriptionTokens: tokeniseDescription(htmlToText(book.description ?? "")),
       shelfTokens,
       rating: book.rating ?? 0,
     };
@@ -571,11 +547,11 @@ export async function buildEdges(themes: BookThemes[]): Promise<AnalyzerEdge[]> 
   const W = WEIGHTS_LOCAL;
   const maxScore = MAX_SCORE_LOCAL;
 
-  const catVecs   = buildTfIdfVectors(themes, (t) => t.categoryTokens,    true,  0);
-  const descVecs  = buildTfIdfVectors(themes, (t) => t.descriptionTokens, false, 0);
-  const shelfVecs = buildTfIdfVectors(themes, (t) => t.shelfTokens,       false, 0);
+  const catVecs   = buildTfIdfVectors(themes, (t) => t.categoryTokens,    true,  MIN_IDF);
+  const descVecs  = buildTfIdfVectors(themes, (t) => t.descriptionTokens, false, MIN_IDF);
+  const shelfVecs = buildTfIdfVectors(themes, (t) => t.shelfTokens,       false, MIN_IDF);
 
-  const candidates: (AnalyzerEdge & { _key: string })[] = [];
+  const candidates: AnalyzerEdge[] = [];
   const n = themes.length;
 
   for (let i = 0; i < n; i++) {
@@ -632,7 +608,6 @@ export async function buildEdges(themes: BookThemes[]): Promise<AnalyzerEdge[]> 
           rating: ratingBoost,
         },
         sharedThemes,
-        _key: `${a.bookId}||${b.bookId}`,
       });
     }
   }
@@ -670,8 +645,7 @@ export async function buildEdges(themes: BookThemes[]): Promise<AnalyzerEdge[]> 
     src[band]++;
     tgt[band]++;
 
-    const { _key: _, ...edge } = c;
-    finalEdges.push(edge);
+    finalEdges.push(c);
   }
 
   return finalEdges;

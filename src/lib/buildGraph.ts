@@ -1,10 +1,5 @@
 import { Book, GraphData, GraphLink, GraphNode } from "./types";
-import type { AnalyzerEdge } from "./analyzer";
-
-// ─── Config ──────────────────────────────────────────────────────────────────
-
-/** Below this node count, labels are always visible; above it, hover-only */
-export const LABEL_VISIBILITY_THRESHOLD = 40;
+import { MAX_SCORE_LOCAL, type AnalyzerEdge } from "./analyzer";
 
 // ─── Color mapping ──────────────────────────────────────────────────────────
 // Keys are matched as substrings of Google Books subject strings.
@@ -16,16 +11,20 @@ const GENRE_COLORS: Record<string, string> = {
   "Literary Fiction":    "#e8a0bf",
   "Historical Fiction":  "#d4a054",
   "Science Fiction":     "#4fc3f7",
+  "Time Travel":         "#4fc3f7", // keeps "Travel" from claiming it
   "Political Science":   "#5c6bc0",
   "Social Science":      "#ab47bc",
   "Christian Living":    "#e0e0e0",
   "Young Adult":         "#26a69a",
   "Self-Help":           "#8bc34a",
   "Self-help":           "#8bc34a",
+  "Language Arts":       "#9e9e9e", // writing craft — keeps "Art" from claiming it
   // ── Single-word / shorter ──
+  "Literary":            "#e8a0bf", // "Fiction / Literary" split into two subjects
   "Fantasy":             "#4caf50",
   "Mystery":             "#ef5350",
   "Thriller":            "#ef5350",
+  "Historical":          "#d4a054", // Google splits "Fiction / Historical" into two subjects
   "History":             "#ff9800",
   "Biography":           "#ff7043",
   "Memoir":              "#ff7043",
@@ -46,26 +45,34 @@ const GENRE_COLORS: Record<string, string> = {
   "Psychology":          "#a3e635",
   "Art":                 "#fb7185",
   "Travel":              "#2dd4bf",
-  // ── Catch-all for unclassified fiction (must come after all Fiction subtypes) ──
+  // ── Catch-all for unclassified fiction (only used when nothing more specific matches) ──
   "Fiction":             "#e8a0bf",
 };
 
 const DEFAULT_NODE_COLOR = "#9e9e9e";
 
-// Sort genre keys longest-first so more-specific keys (e.g. "Science Fiction")
-// always win over shorter overlapping keys (e.g. "Science").
-const SORTED_GENRE_ENTRIES = Object.entries(GENRE_COLORS).sort(
-  (a, b) => b[0].length - a[0].length
-);
+// Each key matches at a word start ("Christian" → "Christianity", but "Art" ≠ "Smart").
+// Keys are tried longest-first so "Science Fiction" beats "Science".
+const GENRE_MATCHERS = Object.entries(GENRE_COLORS)
+  .sort((a, b) => b[0].length - a[0].length)
+  .map(([genre, color]) => ({
+    genre,
+    re: new RegExp(`\\b${genre.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "i"),
+    color,
+  }));
 
+// Subjects are in Google's priority order, so the first one with a genre wins —
+// except bare "Fiction", which only applies if nothing more specific (e.g. a later
+// "Historical" or "Science Fiction") turns up in the remaining subjects.
 function pickNodeColor(subjects: string[]): string {
+  let fallback: string | undefined;
   for (const subject of subjects) {
-    const lower = subject.toLowerCase();
-    for (const [genre, color] of SORTED_GENRE_ENTRIES) {
-      if (lower.includes(genre.toLowerCase())) return color;
-    }
+    const match = GENRE_MATCHERS.find(({ re }) => re.test(subject));
+    if (!match) continue;
+    if (match.genre !== "Fiction") return match.color;
+    fallback ??= match.color;
   }
-  return DEFAULT_NODE_COLOR;
+  return fallback ?? DEFAULT_NODE_COLOR;
 }
 
 /** Returns true if at least one subject maps to a known genre color. */
@@ -88,11 +95,12 @@ export function nodeRadius(degree: number, rating: number | undefined): number {
 // ─── Graph builder ───────────────────────────────────────────────────────────
 
 export function buildGraph(books: Book[], edges: AnalyzerEdge[]): GraphData {
-  const showLabels = books.length <= LABEL_VISIBILITY_THRESHOLD;
+  const ids = new Set(books.map((b) => b.id));
+  const valid = edges.filter((e) => ids.has(e.source) && ids.has(e.target));
 
   // Count degree per book
   const degree = new Map<string, number>();
-  for (const e of edges) {
+  for (const e of valid) {
     degree.set(e.source, (degree.get(e.source) ?? 0) + 1);
     degree.set(e.target, (degree.get(e.target) ?? 0) + 1);
   }
@@ -105,15 +113,17 @@ export function buildGraph(books: Book[], edges: AnalyzerEdge[]): GraphData {
       author: book.author,
       val: deg,
       color: pickNodeColor(book.subjects),
-      labelVisible: showLabels,
       book,
     };
   });
 
-  const links: GraphLink[] = edges.map((e) => ({
+  // valid: an edge to a book that isn't in the graph would crash the force layout
+  const links: GraphLink[] = valid.map((e) => ({
     source: e.source,
     target: e.target,
     weight: e.score,
+    // Claude edges all carry a flat score of 1, so a percentage would be meaningless
+    strength: e.breakdown.tfidfEnriched > 0 ? undefined : Math.min(1, e.score / MAX_SCORE_LOCAL),
     sharedSubjects: e.sharedThemes,
     isManual: false,
   }));

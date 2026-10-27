@@ -94,6 +94,28 @@ function traceDiamond(ctx: CanvasRenderingContext2D, x: number, y: number, r: nu
   ctx.quadraticCurveTo(x, y, x,     y - r);
   ctx.closePath();
 }
+
+// Title without subtitle/series ("Dune: Deluxe Edition" → "Dune"), drawn below a node
+function drawLabel(
+  ctx: CanvasRenderingContext2D, title: string, x: number, bottomY: number,
+  globalScale: number, dimmed: boolean,
+) {
+  const fontSize = Math.max(12 / globalScale, 10);
+  const cutoff = title.search(/[:(]/);
+  const label = cutoff > 0 ? title.slice(0, cutoff).trimEnd() : title;
+  ctx.font = `${fontSize}px system-ui, -apple-system, sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.shadowColor = "rgba(7,7,20,0.9)";
+  ctx.shadowBlur = 4;
+  ctx.fillStyle = dimmed ? "rgba(255,255,255,0.1)" : "rgba(255,255,255,0.82)";
+  ctx.fillText(label, x, bottomY + fontSize * 0.7 + 3);
+  ctx.shadowBlur = 0;
+}
+
+const linkEndId = (end: GraphLink["source"]): string =>
+  typeof end === "object" ? (end as GraphNode).id : end;
+
 const BRIGHT_LINK_OPACITY   = 0.90;
 const DEFAULT_LINK_COLOR    = "rgba(180,215,255,0.12)";
 const DEFAULT_LINK_COLOR_DIM = `rgba(148,163,184,${DIM_OPACITY})`;
@@ -107,21 +129,15 @@ export default function BookGraph({ data, focusedNodeId, showLabels, onBookClick
   const [introOpaque, setIntroOpaque] = useState(true);
   const [minZoomLevel, setMinZoomLevel] = useState(0.01);
 
-  // Log all unique subjects so we can verify color coverage
-  useEffect(() => {
-    if (data.nodes.length === 0) return;
-    const unique = [...new Set(data.nodes.flatMap((n) => n.book.subjects))].sort();
-    console.log(`[BookGraph] unique subjects (${unique.length}):`, unique);
-  }, [data.nodes]);
+  // Reset the pointer cursor if the graph unmounts mid-hover
+  useEffect(() => () => { document.body.style.cursor = "default"; }, []);
 
   // Nodes that participate in at least one edge — the "constellation"
   const allConnectedIds = useMemo(() => {
     const ids = new Set<string>();
     for (const link of data.links) {
-      const src = typeof link.source === "object" ? (link.source as GraphNode).id : link.source as string;
-      const tgt = typeof link.target === "object" ? (link.target as GraphNode).id : link.target as string;
-      ids.add(src);
-      ids.add(tgt);
+      ids.add(linkEndId(link.source));
+      ids.add(linkEndId(link.target));
     }
     return ids;
   }, [data.links]);
@@ -135,9 +151,7 @@ export default function BookGraph({ data, focusedNodeId, showLabels, onBookClick
       return parent.get(id)!;
     };
     for (const link of data.links) {
-      const s = typeof link.source === "object" ? (link.source as GraphNode).id : link.source as string;
-      const t = typeof link.target === "object" ? (link.target as GraphNode).id : link.target as string;
-      parent.set(root(s), root(t));
+      parent.set(root(linkEndId(link.source)), root(linkEndId(link.target)));
     }
     const groups = new Map<string, string[]>();
     for (const id of allConnectedIds) {
@@ -148,44 +162,47 @@ export default function BookGraph({ data, focusedNodeId, showLabels, onBookClick
     return [...groups.values()];
   }, [data.links, allConnectedIds]);
 
+  const nodeMap = useMemo(() => new Map(data.nodes.map((n) => [n.id, n])), [data.nodes]);
+
   // Active highlight = hover takes priority over focused
   const activeId = hoveredNodeId ?? focusedNodeId ?? null;
 
-  const connectedIds = useRef<Set<string>>(new Set());
-
-  useEffect(() => {
-    if (!activeId) { connectedIds.current = new Set(); return; }
-    const ids = new Set<string>([activeId]);
+  // Active node + its neighbours (everything else is dimmed while one is active)
+  const connectedIds = useMemo(() => {
+    const ids = new Set<string>();
+    if (!activeId) return ids;
+    ids.add(activeId);
     for (const link of data.links) {
-      const src = typeof link.source === "object" ? (link.source as GraphNode).id : link.source;
-      const tgt = typeof link.target === "object" ? (link.target as GraphNode).id : link.target;
+      const src = linkEndId(link.source);
+      const tgt = linkEndId(link.target);
       if (src === activeId) ids.add(tgt);
       if (tgt === activeId) ids.add(src);
     }
-    connectedIds.current = ids;
+    return ids;
   }, [activeId, data.links]);
 
-  // Configure force simulation for spacing — re-run when graph size changes
-  useEffect(() => {
-    const raf = requestAnimationFrame(() => {
-      if (!fgRef.current) return;
-      fgRef.current.d3Force("charge")?.strength(-840);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (fgRef.current.d3Force("link") as any)?.distance(50)?.strength(0.8);
-      fgRef.current.d3Force(
-        "collision",
-        forceCollide((node) => {
-          const n = node as GraphNode;
-          return nodeRadius(n.val, n.book.rating) + 6;
-        })
-      );
-      // Gentle gravity — keeps background stars from drifting too far from the constellation
-      fgRef.current.d3Force("x", forceX(0).strength(0.04));
-      fgRef.current.d3Force("y", forceY(0).strength(0.04));
-      fgRef.current.d3ReheatSimulation();
-    });
-    return () => cancelAnimationFrame(raf);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+  // Configure force simulation for spacing. ForceGraph2D is loaded via next/dynamic, so
+  // its ref isn't ready on mount — configure on the first engine tick instead, and again
+  // whenever the graph size changes.
+  const forcesConfiguredForRef = useRef(-1);
+  const handleEngineTick = useCallback(() => {
+    const fg = fgRef.current;
+    if (!fg || forcesConfiguredForRef.current === data.nodes.length) return;
+    forcesConfiguredForRef.current = data.nodes.length;
+    fg.d3Force("charge")?.strength(-840);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fg.d3Force("link") as any)?.distance(50)?.strength(0.8);
+    fg.d3Force(
+      "collision",
+      forceCollide((node) => {
+        const n = node as GraphNode;
+        return nodeRadius(n.val, n.book.rating) + 6;
+      })
+    );
+    // Gentle gravity — keeps background stars from drifting too far from the constellation
+    fg.d3Force("x", forceX(0).strength(0.04));
+    fg.d3Force("y", forceY(0).strength(0.04));
+    fg.d3ReheatSimulation();
   }, [data.nodes.length]);
 
   // Pan + zoom to focused node; zoom back out when deselected (desktop only)
@@ -204,8 +221,8 @@ export default function BookGraph({ data, focusedNodeId, showLabels, onBookClick
   }, [focusedNodeId, data.nodes]);
 
   const handleEngineStop = useCallback(() => {
-    fgRef.current?.resumeAnimation();
-    if (hasInitialFitRef.current) return;
+    // The engine also "stops" on the empty graph shown while analysis runs; wait for real nodes
+    if (hasInitialFitRef.current || data.nodes.length === 0) return;
     hasInitialFitRef.current = true;
 
     // Compute fit at target padding, step back to 80%, then drift in
@@ -219,7 +236,7 @@ export default function BookGraph({ data, focusedNodeId, showLabels, onBookClick
       setIntroOpaque(false);
       setTimeout(() => setMinZoomLevel(0.08), 1700);
     });
-  }, []);
+  }, [data.nodes.length]);
 
   // Decorative starfield + nebula glows — drawn before nodes/links
   const onRenderFramePre = useCallback((ctx: CanvasRenderingContext2D) => {
@@ -238,7 +255,6 @@ export default function BookGraph({ data, focusedNodeId, showLabels, onBookClick
     ctx.restore();
 
     // Nebula glows
-    const nodeMap = new Map(data.nodes.map((n) => [n.id, n]));
     ctx.save();
     for (const clusterIds of clusterGroups) {
       if (clusterIds.length < 3) continue; // skip tiny clusters
@@ -267,7 +283,7 @@ export default function BookGraph({ data, focusedNodeId, showLabels, onBookClick
       ctx.fill();
     }
     ctx.restore();
-  }, [clusterGroups, data.nodes]);
+  }, [clusterGroups, nodeMap]);
 
   const nodeCanvasObject = useCallback(
     (node: object, ctx: CanvasRenderingContext2D, globalScale: number) => {
@@ -278,25 +294,26 @@ export default function BookGraph({ data, focusedNodeId, showLabels, onBookClick
 
       const isActive = activeId === n.id;
       const isFocused = focusedNodeId === n.id;
-      const isDimmed = activeId !== null && !connectedIds.current.has(n.id);
+      const isDimmed = activeId !== null && !connectedIds.has(n.id);
 
       // Background stars: unconnected nodes drawn as simple varied-brightness dots
       if (!allConnectedIds.has(n.id)) {
         const { r: starR, opacity: starOpacity } = starProps(n.id);
-        ctx.globalAlpha = isDimmed ? DIM_OPACITY : starOpacity;
+        ctx.globalAlpha = isActive ? 1 : isDimmed ? DIM_OPACITY : starOpacity;
         ctx.shadowBlur = 0;
         ctx.beginPath();
         ctx.arc(x, y, starR, 0, 2 * Math.PI);
         ctx.fillStyle = "#c8d8f0";
         ctx.fill();
         ctx.globalAlpha = 1;
+        if (isActive) drawLabel(ctx, n.title, x, y + starR, globalScale, false);
         return;
       }
 
       ctx.globalAlpha = isDimmed ? DIM_OPACITY : 1;
 
       // Twinkle: connected nodes breathe between 0.85–1.0 opacity, each at its own pace
-      if (!isDimmed && allConnectedIds.has(n.id)) {
+      if (!isDimmed) {
         const t = (Math.sin(Date.now() / 3500 + nodePhase(n.id)) + 1) / 2;
         ctx.globalAlpha = 0.85 + 0.15 * t;
       }
@@ -357,35 +374,18 @@ export default function BookGraph({ data, focusedNodeId, showLabels, onBookClick
 
       // showLabels=true → always show for connected nodes; false → only on hover or deep zoom
       const showLabel = isActive || (n.val > 0 && (showLabels || globalScale > 2));
-      if (showLabel) {
-        const fontSize = Math.max(12 / globalScale, 10);
-        const cutoff = Math.min(
-          n.title.includes(":") ? n.title.indexOf(":") : Infinity,
-          n.title.includes("(") ? n.title.indexOf("(") : Infinity,
-        );
-        const label = cutoff < Infinity ? n.title.slice(0, cutoff).trimEnd() : n.title;
-        ctx.font = `${fontSize}px Inter, sans-serif`;
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        ctx.shadowColor = "rgba(7,7,20,0.9)";
-        ctx.shadowBlur = 4;
-        ctx.fillStyle = isDimmed ? "rgba(255,255,255,0.1)" : "rgba(255,255,255,0.82)";
-        ctx.fillText(label, x, y + radius + fontSize * 0.7 + 3);
-        ctx.shadowBlur = 0;
-      }
+      if (showLabel) drawLabel(ctx, n.title, x, y + radius, globalScale, isDimmed);
 
       ctx.globalAlpha = 1;
     },
-    [activeId, focusedNodeId, hoveredNodeId, showLabels, allConnectedIds]
+    [activeId, focusedNodeId, hoveredNodeId, showLabels, allConnectedIds, connectedIds]
   );
 
   const linkColor = useCallback(
     (link: object) => {
       const l = link as GraphLink;
-      const src = typeof l.source === "object" ? (l.source as GraphNode).id : l.source;
-      const tgt = typeof l.target === "object" ? (l.target as GraphNode).id : l.target;
       if (!activeId) return DEFAULT_LINK_COLOR;
-      const isConnected = src === activeId || tgt === activeId;
+      const isConnected = linkEndId(l.source) === activeId || linkEndId(l.target) === activeId;
       return isConnected
         ? `rgba(167,139,250,${BRIGHT_LINK_OPACITY})`
         : DEFAULT_LINK_COLOR_DIM;
@@ -402,6 +402,9 @@ export default function BookGraph({ data, focusedNodeId, showLabels, onBookClick
   );
 
   const handleNodeHover = useCallback((node: object | null) => {
+    // On touch, a tap fires hover with no matching "leave", so the highlight would stick
+    // and override the focused node — rely on click/focus alone there
+    if (IS_TOUCH) return;
     setHoveredNodeId(node ? (node as GraphNode).id : null);
     document.body.style.cursor = node ? "pointer" : "default";
   }, []);
@@ -415,11 +418,14 @@ export default function BookGraph({ data, focusedNodeId, showLabels, onBookClick
     onBackgroundClick();
   }, [onBackgroundClick]);
 
+  const lastAutoFitRef = useRef(0);
   const handleZoomEnd = useCallback(({ k }: { k: number; x: number; y: number }) => {
-    // After intro, snap back to fit if user zooms out past the min
-    if (hasInitialFitRef.current && k <= minZoomLevel + 0.01) {
-      fgRef.current?.zoomToFit(600, getFitPadding(), connectedFilter);
-    }
+    // After intro, snap back to fit if user zooms out past the min. d3-zoom also fires
+    // "end" after our own fit, so ignore that one or a fit landing at minZoom would loop.
+    if (!hasInitialFitRef.current || k > minZoomLevel + 0.01) return;
+    if (Date.now() - lastAutoFitRef.current < 1000) return;
+    lastAutoFitRef.current = Date.now();
+    fgRef.current?.zoomToFit(600, getFitPadding(), connectedFilter);
   }, [minZoomLevel]);
 
   // Give every node a minimum hit area so unconnected (to-read) nodes are clickable.
@@ -477,7 +483,9 @@ export default function BookGraph({ data, focusedNodeId, showLabels, onBookClick
         }}
         backgroundColor="transparent"
         onRenderFramePre={onRenderFramePre}
+        onEngineTick={handleEngineTick}
         onEngineStop={handleEngineStop}
+        autoPauseRedraw={false} // keep redrawing after layout settles so stars keep twinkling
         onZoomEnd={handleZoomEnd}
         onNodeClick={handleNodeClick}
         onNodeHover={handleNodeHover}
@@ -495,10 +503,11 @@ export default function BookGraph({ data, focusedNodeId, showLabels, onBookClick
         y={edgeTooltip?.y ?? 0}
       />
 
-      {/* Zoom-to-fit button — bottom-right, touch-friendly */}
+      {/* Zoom-to-fit button — bottom-left, touch-friendly */}
       <button
         onClick={handleZoomToFit}
         title="Fit all"
+        aria-label="Zoom to fit"
         className="absolute bottom-5 left-4 z-20 w-10 h-10 flex items-center justify-center rounded-xl bg-white/[0.06] border border-white/10 text-white/35 hover:text-white/70 hover:border-white/20 active:bg-white/10 transition-colors touch-manipulation"
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

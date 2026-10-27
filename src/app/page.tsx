@@ -1,6 +1,10 @@
 import ImportSection from "@/components/import/ImportSection";
+import GraphView from "@/components/graph/GraphView";
 
 export default function Home() {
+  // The public deployment is read-only and serves the graph directly at "/"
+  if (process.env.NEXT_PUBLIC_READ_ONLY === "true") return <GraphView />;
+
   return (
     <main className="min-h-screen flex flex-col items-center justify-center px-6 py-16 bg-[#070714]">
       {/* Subtle radial glow */}

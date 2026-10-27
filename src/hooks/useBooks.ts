@@ -2,19 +2,22 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Book, EnrichmentProgress } from "@/lib/types";
-import { AnalyzerEdge } from "@/lib/analyzer";
+import { AnalyzerEdge, clearClaudeEdgeCache } from "@/lib/analyzer";
 import { enrichBooks } from "@/lib/googleBooks";
-import { loadBooks, mergeBooks, saveBooks } from "@/lib/storage";
+import { loadBooks, novelBooks, saveBooks } from "@/lib/storage";
 import { hasKnownGenre } from "@/lib/buildGraph";
 
-const READ_ONLY = process.env.NEXT_PUBLIC_READ_ONLY === "true";
+export const READ_ONLY = process.env.NEXT_PUBLIC_READ_ONLY === "true";
+const REENRICH_FLAG_KEY = "bookgraph-reenriched";
+let backgroundPassStarted = false;
 
 export function useBooks() {
   const [books, setBooks] = useState<Book[]>([]);
   const [precomputedEdges, setPrecomputedEdges] = useState<AnalyzerEdge[] | undefined>(undefined);
   const [progress, setProgress] = useState<EnrichmentProgress | null>(null);
   const [hydrated, setHydrated] = useState(false);
-  const reEnrichDoneRef = useRef(false);
+  const booksRef = useRef<Book[]>([]);
+  useEffect(() => { booksRef.current = books; }, [books]);
 
   // Load on mount: static JSON in read-only mode, localStorage otherwise
   useEffect(() => {
@@ -24,39 +27,46 @@ export function useBooks() {
         .then((data: { books: Book[]; edges: AnalyzerEdge[] }) => {
           setBooks(data.books ?? []);
           setPrecomputedEdges(data.edges ?? []);
-          setHydrated(true);
         })
-        .catch(() => setHydrated(true));
-    } else {
-      setBooks(loadBooks());
-      setHydrated(true);
+        .catch((err) => console.warn("Failed to load library:", err))
+        .finally(() => setHydrated(true));
+      return;
     }
-  }, []);
 
-  // One-time background pass: silently re-enrich any book that was marked enriched
-  // but came back with no subjects (e.g. wrong Google Books result was cached).
-  // Persisted to localStorage so it only ever runs once across page navigations.
-  useEffect(() => {
-    if (READ_ONLY) return;
-    if (!hydrated || reEnrichDoneRef.current || books.length === 0) return;
-    if (localStorage.getItem("bookgraph-reenriched") === "1") { reEnrichDoneRef.current = true; return; }
-
-    const noSubjects = books.filter(
-      (b) => b.enriched && (b.subjects.length === 0 || !hasKnownGenre(b.subjects))
-    );
-    reEnrichDoneRef.current = true;
-    localStorage.setItem("bookgraph-reenriched", "1");
-    if (noSubjects.length === 0) return;
-
-    enrichBooks(noSubjects, () => {}).then((fixed) => {
-      const fixedMap = new Map(fixed.map((b) => [b.id, b]));
-      setBooks((prev) => prev.map((b) => {
-        const f = fixedMap.get(b.id);
-        return (f && f.subjects.length > 0) ? f : b;
-      }));
+    const stored = loadBooks();
+    // Deferred so state is set from a callback rather than synchronously in the effect
+    queueMicrotask(() => {
+      setBooks(stored);
+      setHydrated(true);
     });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hydrated]);
+
+    // Background repair (once per session, across hook instances): retry books whose
+    // lookup failed, plus a one-time pass over books enriched without a known genre
+    // (e.g. a wrong Google Books match was cached).
+    if (backgroundPassStarted) return;
+    backgroundPassStarted = true;
+    let genrePassDone = true;
+    try { genrePassDone = localStorage.getItem(REENRICH_FLAG_KEY) === "1"; } catch {}
+    const stale = stored.filter((b) => !b.enriched || (!genrePassDone && !hasKnownGenre(b.subjects)));
+    if (stale.length === 0) {
+      try { localStorage.setItem(REENRICH_FLAG_KEY, "1"); } catch {}
+      return;
+    }
+    enrichBooks(stale, () => {}).then((results) => {
+      const original = new Map(stale.map((b) => [b.id, b]));
+      // Accept a result if the lookup succeeded and it isn't a regression to no subjects
+      const fixed = new Map(
+        results
+          .filter((b) => b.enriched && (b.subjects.length > 0 || !original.get(b.id)!.enriched))
+          .map((b) => [b.id, b])
+      );
+      const apply = (list: Book[]) => list.map((b) => fixed.get(b.id) ?? b);
+      // Write straight to storage so results survive even if this component unmounted
+      saveBooks(apply(loadBooks()));
+      setBooks(apply);
+      try { localStorage.setItem(REENRICH_FLAG_KEY, "1"); } catch {}
+    });
+  }, []);
 
   // Persist whenever books change (after hydration, non-read-only only)
   useEffect(() => {
@@ -66,9 +76,12 @@ export function useBooks() {
   const addBooks = useCallback(async (incoming: Book[]) => {
     if (READ_ONLY) return;
 
-    setBooks((prev) => mergeBooks(prev, incoming));
+    // Skip books already in the library so we don't re-query Google Books for them
+    const fresh = novelBooks(booksRef.current, incoming);
+    if (fresh.length === 0) return;
+    setBooks((prev) => [...prev, ...novelBooks(prev, fresh)]);
 
-    const toEnrich = incoming.filter((b) => !b.enriched);
+    const toEnrich = fresh.filter((b) => !b.enriched);
     if (toEnrich.length === 0) return;
 
     setProgress({ total: toEnrich.length, current: 0, currentTitle: "", done: false });
@@ -78,7 +91,10 @@ export function useBooks() {
     });
 
     const enrichedMap = new Map(enriched.map((b) => [b.id, b]));
-    setBooks((prev) => prev.map((b) => enrichedMap.get(b.id) ?? b));
+    const next = booksRef.current.map((b) => enrichedMap.get(b.id) ?? b);
+    setBooks(next);
+    // Save immediately: callers usually navigate away right after this resolves
+    saveBooks(next);
 
     setProgress((p) => (p ? { ...p, done: true } : null));
     setTimeout(() => setProgress(null), 2000);
@@ -87,6 +103,8 @@ export function useBooks() {
   const clearLibrary = useCallback(() => {
     if (READ_ONLY) return;
     setBooks([]);
+    saveBooks([]);
+    clearClaudeEdgeCache();
   }, []);
 
   return { books, precomputedEdges, addBooks, clearLibrary, progress, hydrated, readOnly: READ_ONLY };
